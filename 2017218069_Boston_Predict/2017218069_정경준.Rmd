@@ -1,0 +1,379 @@
+---
+title: "2017218069_정경준_Boston"
+output: html_document
+date: "2022-12-16"
+---
+
+```{r setup, include=FALSE}
+
+```
+
+## Boston 데이터 회귀 분석
+
+#### 이번 분석에 사용한 회귀 분석이란 연속형과 수치형반응 변수를 분석하는 방법입니다.
+
+### 1. 함수 작성 및 환경 준비
+```{r}
+rmse <- function(yi, yhat_i){
+  sqrt(mean((yi - yhat_i)^2))
+}
+
+```
+> 가장 처음으로 RMSE함수를 다음과 같이 정의합니다.  
+ RMSE(Root MEan Squared Error): > 회귀분석에서의 오차
+ $$ RMSE = \sqrt{\frac{1}{n} \sum_{i=1}^n (y_i-\hat{y}_i)^2} $$
+ RMSE는 예측오차로 값이 작을수록 더 정확한 모형입니다.
+
+
+
+다음으로 다음과 같이 필요한 패키지들을 불러옵니다.
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(MASS) #로버스트 선형회귀를 위한 패키지
+library(glmnet) #라쏘, 능형, 일래스틱넷 모형을 위한 패키지
+library(randomForest) #탠덤 포레스트 모형을 위한 패키지
+library(gbm) #부스팅을 위한 패키지
+library(rpart) #나무모형을 위한 패키지
+library(boot) #유의미한 변수선택을 위한 패키지
+library(data.table) #데이터 테이블 형을 위한 패키지
+library(ROCR) #ROC 곡선을 위한 패키지
+library(ggplot2) #데이터 시각화를 위한 패키지
+library(dplyr) #데이터 가공 문법을 위한 패키지
+library(gridExtra) #그래프를 격자 형태로 보기 위한 패키지
+```
+
+### 2. Boston 데이터 읽어오기
+
+```{r warning=FALSE}
+housing <- read.table("https://archive.ics.uci.edu/ml/machine-learning-databases/housing/housing.data", strip.white = T)
+data <- tbl_df(housing)
+names(data) <- c('crim', 'zn','indus','chas','nox','rm','age','dis','rad','tax','ptratio','b','lstat','medv')
+glimpse(data) #반응변수는 medv: 주택가격
+```
+
+
+### 3. 시각화
+
+```{r}
+panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...){
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(0, 1, 0, 1))
+  r <- abs(cor(x, y))
+  txt <- format(c(r, 0.123456789), digits = digits)[1]
+  txt <- paste0(prefix, txt)
+  if(missing(cex.cor)) cex.cor <- 0.8/strwidth(txt)
+  text(0.5, 0.5, txt, cex = cex.cor * r)
+}
+```
+> 시각화를 위한 pairs()함수를 위한 panel.cor함수를 다음과 같이 정의합니다.
+
+pairs()함수로 14개의 변수들 간의 산점도입니다.
+```{r warning=FALSE}
+pairs(data %>% dplyr::sample_n(min(1000, nrow(data))),
+      lower.panel=function(x,y){ points(x,y); abline(0, 1, col='red')},
+      upper.panel = panel.cor)
+```
+
+> 반응변수 medv와 상관관계가 높은 설명변수는 lstat와 rm입니
+  
+### 4. 훈련,검증,테스트 세트의 구분
+
+데이터 세트를 훈련,검증,테스트 각각 60:20:20으로 나눕니다
+```{r}
+set.seed(1606)
+n <- nrow(data)
+idx <- 1:n
+
+ 
+```
+> 재현 가능성을 위한 관측치 개수 n을 정의를 하고 index는 1부터 n까지로 할당합니다.
+
+```{r}
+training_idx <- sample(idx, n * .60)
+idx <- setdiff(idx, training_idx)
+validate_idx <- sample(idx, n * .20)
+test_idx <- setdiff(idx, validate_idx)
+
+```
+> 첫 번째 코드부터 순서대로  
+1 ~ n 중에서 60%는 랜덤하게 뽑아서 훈련용 데이터 index로 할당합니다.  
+그 후 index를 훈련용 데이터로 뽑힌 index를 제외하고 다시 정의를 합니다.  
+다시 정의된 index의 20%를 랜덤하게 뽑아서 검증용 데이터 index로 할당을 합니다.  
+마지막으로 나머지 index는 테스트용 데이터 index로 할당을 합니다.
+
+위의 과정을 진행을 한 후에 각각의 훈련,검증,테스트용 데이터세트로 정의를 합니다.
+```{r}
+training <- data[training_idx,]
+validation <- data[validate_idx,]
+test <- data[test_idx,] 
+```
+
+### 5. 선형 회귀 모델
+
+```{r}
+data_lm_full <- lm(medv ~ ., data=training)
+summary(data_lm_full)
+```
+> 선형회귀 모델에 적합한 lm함수를 사용합니다.  
+lm(반응변수 ~ 설명변수1 + 설명변수2 + ... , data=훈련용 데이터 세트)함수를 사용하였습니다.  
+medv ~ 뒤에 .표시는 모든 설명 변수를 의미합니다.
+그리고 summary함수를 사용하여 선형회귀 모형 적합 결과를 확인합니다.  
+결정 계수 R-squared 값이 1에 가까워야 좋은 모형이지만 0.7549로 그다지 좋지 않은 값을 확인합니다.
+
+선형회귀 모형에서 설명변수를 선택  
+위의 선형 회귀 모형에서는 모든 설명 변수로 적합을 했는데 이번에는 변수를 조금 수정해서 적합을 해봅니다.  
+조금 더 복잡한 모든 이차상호작용을 고려를 하여 다시 모형을 만들었습니다.
+```{r}
+data_lm_full2 = lm(medv ~ .^2, data = training)
+summary(data_lm_full2)
+```
+> 전에 모형과는 다르게 결정계수 R-squared 값0.9278 / 수정된 결정계수 R-squared : 0.8966으로 모형이 좋아진 것을 확인할 수 있습니다.
+
+```{r}
+length(coef(data_lm_full2))
+```
+> 그러나 모수의 개수가 92개로 많이 복잡해졌습니다. 따라서 92개 중 가장 중요한 모수를 선택하기로 했습니다.
+
+stepAIC(선형회귀 모형, scope=list(upper=~ ,lower=~ 1))  
+중요한 변수를 자동으로 선택을 해주는 함수입니다.
+```{r warning=FALSE, results='hide'}
+data_step = stepAIC(data_lm_full, scope = list(upper = ~ .^2, lower = ~1)) 
+```
+> data_step은 가장 중요한 모수들만 모아 적합한 선형 회귀 모형이 됩니다.
+
+data_step 모형의 summary
+```{r}
+summary(data_step)
+```
+> 결정계수 R-squared: 0.9107 / 수정된 결정계수 R-squared: 0.8998로 모형은 좋은 모형임을 나타냅니다
+
+```{r}
+length(coef(data_step))
+```
+> 모수도 92개에서 34개로 줄어들어 덜 복잡한 모형이 생긴걸 확인을 할 수 있습니다.
+
+ 
+### 선형 회귀 모형의 평가 
+  
+```{r}
+y_obs <- validation$medv #반응 변수
+#3가지 모형, 각각 평가
+yhat_lm <- predict(data_lm_full, newdata=validation)
+yhat_lm_2 <- predict(data_lm_full2, newdata=validation)
+yhat_step <- predict(data_step, newdata=validation)
+```
+> 검증용 데이터 세트를 이용하여 모형의 예측능력을 계산합니다.  
+predict(lm(), newdata= 검증세트) 함수를 사용하였으며,  
+그 후 rmse(검증 세트의 반응 변수, predict() ) 함수를 이용하여 RMSE(예측오차)를 구하였습니다. 
+
+```{r}
+rmse(y_obs, yhat_lm)
+rmse(y_obs, yhat_lm_2)
+rmse(y_obs, yhat_step)
+```
+> RMSE(예측오차)가 작을수록 예측 능력이 좋은 모형인데  
+세 모형중 stepAIC 함수를 이용한 모형(data_step)이 RMSE: 3.268262로 예측 능력이 가장 높은것을 확인을 할 수 있습니다.
+
+### 6. 라쏘 모형 적합
+
+
+```{r}
+xx <- model.matrix(medv ~ .^2-1, data)
+x <- xx[training_idx, ]
+y <- training$medv
+```
+> model.matrix()를 이용하여 모형 행렬을 생성한 후, cv.glmnet()를 사용하였습니다.  
+cv.lgmnet(모형행렬 중 훈련세트, 훈련 세트의 반응 변수)중 ^2-1로 한 이유는 모든 이차상호작용을 포함하고자 함입니다.
+
+```{r}
+data_cvfit <- cv.glmnet(x, y)
+plot(data_cvfit)
+```
+
+> 왼쪽 점선: lambda.min 오른쪽 점선: lambda.1se
+
+```{r results='hide'}
+coef(data_cvfit, s=c("lambda.1se"))
+```
+> lambda.1se 방법으로 하였을 때, 변수들의 계수를 볼 수 있습니다.
+
+```{r}
+log(data_cvfit$lambda.1se)
+length(which(coef(data_cvfit, s=c("lambda.1se")) !=0))-1
+```
+> lambda.1se 방법에서 로그 lambda 값을 출력을 합니다.  
+그 다음코드로 선택된 변수가 35개인 것을 확인을 할 수 있으며,
+-1을 해주는 이유는 절편향(intercept)을 제외하기 위하며 -1을 해주었습니다.
+
+```{r results='hide'}
+coef(data_cvfit, s = c("lambda.min"))
+```
+> lambda.min 방법으로 했을 때, 변수들의 계수를 확인 할 수 있습니다.
+
+```{r}
+log(data_cvfit$lambda.min)
+length(which(coef(data_cvfit, s=c("lambda.min")) !=0))-1
+```
+> lambda.min 방법에서 로그 lambda 값을 출력을 하고,  
+선택된 변수가 71개임을 확인 하였습니다.
+
+### 예측해보기
+
+```{r}
+predict(data_cvfit, s="lambda.min", newx = x[1:5, ])
+```
+> 훈련용 데이터에서 x의 1~5행의 관측치를 통해서 예측을 하였습니다.
+
+### 라쏘 모형평가 
+```{r}
+y_obs <- validation$medv
+yhat_glmnet <- predict(data_cvfit, s="lambda.min", newx=xx[validate_idx,])
+rmse(y_obs, yhat_glmnet)
+```
+> predict(cv.glmnet(), s="lambda.min", newx=검증세트) 함수를 사용하였습니다.  
+rmse(검증세트의 반응 변수, predict()) 함수로 예측오차를 구하였으며  
+RMSE 예측 오차값이 3.055207임을 확인하였습니다.
+
+### 7. 나무 모형
+```{r}
+data_tr <- rpart(medv ~ ., data = training)
+par(mfrow = c(1,1), xpd = NA)
+plot(data_tr)
+text(data_tr, use.n = TRUE)
+```
+
+> 나무 모형 적합으로 rpart(반응 변수~., data=훈련용 데이터 세트)를 사용하였습니다.
+
+### 간단히 예측해보기
+```{r}
+predict(data_tr,newdata = data[1:5, ])
+```
+
+### 나무 모형 모형평가
+```{r}
+y_obs <- validation$medv
+yhat_tr <- predict(data_tr, validation)
+rmse(y_obs, yhat_tr)
+```
+
+> predict(rpart(), 검증 데이터 세트) 함수를 사용하였습니다.  rmse(검증 세트의 반응 변수, predict()) 함수로 예측오차를 구하였습니다.  
+RMSE: 3.94209로 지금까지 적합한 모형 중 가장 RMSE가 큽니다. 이 의미는 예측 능력이 가장 낮다는 것을 의미합니다.
+
+### 랜덤 포레스트
+```{r}
+set.seed(1607)
+data_rf <- randomForest(medv ~ ., training)
+```
+> randomForest(반응변수 ~.,data= 훈련용 데이터 세트)함수를 사용하여 랜텀 포레스트 모형에 적합하였습니다.
+
+```{r}
+data_rf
+```
+
+> data_rf 확인
+
+```{r}
+plot(data_rf) #오차율 감소
+varImpPlot(data_rf) #변수 중요도
+```
+
+> 나무 개수가 50개 정도에서 더 이상 MSE가 감소하지 않는 것을 알 수 있습니다.  
+변수의 중요도 plot은 가장 중요한 변수부터 위에서 아래로 정렬되어 있습니다.  
+(여기서 lstat와 rm변수가 중요한 변수입니다.)
+
+### 간단히 예측해보기
+```{r}
+predict(data_rf, newdata=data[1:5,])
+```
+
+### 랜덤 포레스트 모형 평가
+```{r}
+y_obs <- validation$medv
+yhat_rf <- predict(data_rf, newdata=validation)
+rmse(y_obs, yhat_rf)
+```
+
+> 지금까지의 적합한 모형 중 RMSE: 2.536608로 가장 낮으며 이는 예측 능력이 가장 좋다는 것을 의미합니다.
+
+### 부스팅
+
+```{r results='hide'}
+set.seed(1607)
+
+data_gbm <- gbm(medv ~ ., data=training,
+                n.trees=30000, cv.folds=3, verbose = TRUE)
+
+```
+> gbm(반응 변수~., data=수정된 훈련용 데이터 세트, distribution = "bermoulli", n.trees=나무 개수, cv.folds=3, verbose=T) 함수를 사용하였습니다.
+
+```{r}
+(best_iter = gbm.perf(data_gbm, method="cv"))
+```
+> 부스팅 모형 적합 & 최적 반복수 : 663을 확인하였습니다.
+
+### 부스팅 모형 평가
+
+```{r}
+y_obs<-validation$medv
+yhat_gbm <- predict(data_gbm, n.trees=best_iter, newdata=validation)
+rmse(y_obs, yhat_gbm)
+```
+
+> RMSE: 2.990717로 랜텁포레스트 모형 다음으로 RMSE값이 낮았습니다. 지금까지 예측 능력중 2위를 기록하였습니다. 
+
+### 최종 모형 선택과 테스트 세트 오차 계산
+
+선형 회귀, 라쏘, 나무 모형, 랜덤 포레스트, 부스팅까지 총 5개의 모형의 RMSE값을 비교합니다.
+```{r}
+data.frame(
+  method=c('lm','glmnet','tr','rf','gbm'),
+  rmse=c(rmse(y_obs, yhat_step),
+           rmse(y_obs, yhat_glmnet),
+           rmse(y_obs, yhat_tr),
+           rmse(y_obs, yhat_rf),
+           rmse(y_obs, yhat_gbm)))
+```
+
+> RMSE값이 가장 낮은 것부터 순서대로  
+랜덤 포레스트 < 부스팅 < 라쏘 < 선형 회귀 < 나무모형  
+순으로 확인을 할 수 있습니다.
+
+```{r}
+rmse(test$medv, predict(data_rf, newdata = test))
+```
+> RF의 테스트 데이터 세트에서의 RMSE값은 다음과 같습니다.
+
+### 회귀 분석의 오차 시각화(병렬 상자 그림)
+
+여러 회귀 방법의 오차를 비교하는 시각화 방법 중 하나로 예측 분포를 병렬상자 그림으로 보여주는 것 입니다.
+```{r}
+boxplot(list(lm = y_obs-yhat_step,
+             
+             glmnet = y_obs-yhat_glmnet,
+             
+             rf = y_obs-yhat_rf,
+             
+             gbm = y_obs-yhat_gbm), ylab="Error in Validation Set")
+
+abline(h=0, lty=2, col='blue')
+```
+
+또한 모형들 간의 예측값들 끼리 산점도 행렬을 그려보면 다음과 같습니다.
+```{r warning=FALSE}
+pairs(data.frame(y_obs=y_obs,
+                 
+                 yhat_lm=yhat_step,
+                 
+                 yhat_glmnet=c(yhat_glmnet),
+                 
+                 yhat_rf=yhat_rf,
+                 
+                 yhat_gbm=yhat_gbm),
+      
+      lower.panel=function(x,y){ points(x,y); abline(0, 1, col='red')},
+      
+      upper.panel = panel.cor)  
+```
+
+> 그림에서 알 수 있듯 stepwise 변수 선택 모형과 glmnet 예측값끼리는 상관 계수가 높고, RF와 gbm값 끼리도 상관계수가 높은 것으로 보입니다.  
+관측값과 상관계수가 가장 높은 방법은 RF입니다.
